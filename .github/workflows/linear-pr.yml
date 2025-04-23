@@ -9,81 +9,40 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Create Linear Issue
-        uses: actions/github-script@v6
-        with:
-          script: |
-            // Import fetch - only once
-            const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
+        shell: bash
+        run: |
+          # Extract PR info
+          PR_TITLE="${{ github.event.pull_request.title }}"
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          PR_URL="${{ github.event.pull_request.html_url }}"
+          PR_AUTHOR="${{ github.event.pull_request.user.login }}"
+          PR_BODY="${{ github.event.pull_request.body }}"
+          
+          # Format description
+          DESCRIPTION="## GitHub PR Details\n**PR:** [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})\n**Author:** ${PR_AUTHOR}\n\n${PR_BODY}"
+          
+          # Create Linear issue via API using curl
+          RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
+            -d "{\"query\":\"mutation CreateIssue(\$title: String!, \$description: String!, \$teamKey: String!) { issueCreate(input: { title: \$title, description: \$description, teamKey: \$teamKey }) { success issue { id identifier url } } }\",\"variables\":{\"title\":\"[PR] ${PR_TITLE}\",\"description\":\"${DESCRIPTION}\",\"teamKey\":\"${{ secrets.LINEAR_TEAM_KEY }}\"}}")
+          
+          echo "Linear API response: $RESPONSE"
+          
+          # Extract issue identifier and URL using grep and sed
+          ISSUE_IDENTIFIER=$(echo $RESPONSE | grep -o '"identifier":"[^"]*"' | sed 's/"identifier":"//;s/"//')
+          ISSUE_URL=$(echo $RESPONSE | grep -o '"url":"[^"]*"' | sed 's/"url":"//;s/"//')
+          
+          if [ ! -z "$ISSUE_IDENTIFIER" ]; then
+            echo "Linear issue created: $ISSUE_IDENTIFIER ($ISSUE_URL)"
             
-            // Extract PR info
-            const { title, html_url, body, user } = context.payload.pull_request;
-            
-            // Format issue description
-            const description = `
-            ## GitHub PR Details
-            **PR:** [#${context.payload.pull_request.number}: ${title}](${html_url})
-            **Author:** ${user.login}
-            
-            ${body || ''}
-            `;
-            
-            // Create Linear issue via API
-            try {
-              console.log('Creating Linear issue...');
-              
-              const response = await fetch('https://api.linear.app/graphql', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': process.env.LINEAR_API_KEY
-                },
-                body: JSON.stringify({
-                  query: `
-                    mutation CreateIssue($title: String!, $description: String!, $teamKey: String!) {
-                      issueCreate(input: {
-                        title: $title,
-                        description: $description,
-                        teamKey: $teamKey
-                      }) {
-                        success
-                        issue {
-                          id
-                          identifier
-                          url
-                        }
-                      }
-                    }
-                  `,
-                  variables: {
-                    title: `[PR] ${title}`,
-                    description: description,
-                    teamKey: process.env.LINEAR_TEAM_KEY
-                  }
-                })
-              });
-              
-              const data = await response.json();
-              console.log('Linear API response:', JSON.stringify(data));
-              
-              if (data.data?.issueCreate?.success) {
-                const issue = data.data.issueCreate.issue;
-                console.log(`Linear issue created: ${issue.identifier} (${issue.url})`);
-                
-                // Add a comment to the PR with the Linear issue link
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.payload.pull_request.number,
-                  body: `✅ Linear issue created: [${issue.identifier}](${issue.url})`
-                });
-              } else {
-                console.error('Failed to create Linear issue:', data.errors || 'Unknown error');
-                core.setFailed('Failed to create Linear issue');
-              }
-            } catch (error) {
-              console.error('Error:', error);
-              core.setFailed(error.message);
-            }
-        env:
-          LINEAR_API_KEY: ${{ secrets.LINEAR_API_KEY }}
-          LINEAR_TEAM_KEY: ${{ secrets.LINEAR_TEAM_KEY }}
+            # Add comment to PR
+            PR_COMMENT_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
+            curl -s -X POST $PR_COMMENT_URL \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"body\":\"✅ Linear issue created: [${ISSUE_IDENTIFIER}](${ISSUE_URL})\"}"
+          else
+            echo "Failed to create Linear issue"
+            exit 1
+          fi
