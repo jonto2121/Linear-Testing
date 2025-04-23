@@ -18,14 +18,14 @@ jobs:
           PR_AUTHOR="${{ github.event.pull_request.user.login }}"
           PR_BODY="${{ github.event.pull_request.body }}"
           
-          # Format description
+          # Format description (escape for JSON)
           DESCRIPTION="## GitHub PR Details\n**PR:** [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})\n**Author:** ${PR_AUTHOR}\n\n${PR_BODY}"
           
-          # Create Linear issue via API using curl
+          # Create Linear issue via API using curl with correct teamId field
           RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
             -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
-            -d "{\"query\":\"mutation CreateIssue(\$title: String!, \$description: String!, \$teamKey: String!) { issueCreate(input: { title: \$title, description: \$description, teamKey: \$teamKey }) { success issue { id identifier url } } }\",\"variables\":{\"title\":\"[PR] ${PR_TITLE}\",\"description\":\"${DESCRIPTION}\",\"teamKey\":\"${{ secrets.LINEAR_TEAM_KEY }}\"}}")
+            -d "{\"query\":\"mutation CreateIssue(\$title: String!, \$description: String!, \$teamId: String!) { issueCreate(input: { title: \$title, description: \$description, teamId: \$teamId }) { success issue { id identifier url } } }\",\"variables\":{\"title\":\"[PR] ${PR_TITLE}\",\"description\":\"${DESCRIPTION}\",\"teamId\":\"${{ secrets.LINEAR_TEAM_ID }}\"}}")
           
           echo "Linear API response: $RESPONSE"
           
