@@ -11,8 +11,8 @@ jobs:
       - name: Create Linear Issue
         uses: linearapp/linear-action@v1
         with:
-          linear-api-key: ${{ secrets.lin_api_FeP6TegoxmdCwRfuCDEwK9sePK9DiIb2BwAEgNT4 }}
-          team: ${{ secrets.JON }} # Just the team KEY, not full ID (like "ENG" or "PROD")
+          linear-api-key: ${{ secrets.LINEAR_API_KEY }}
+          team: ${{ secrets.LINEAR_TEAM_KEY }} # Just the team KEY, not full ID (like "ENG" or "PROD")
           title: "[PR] ${{ github.event.pull_request.title }}"
           description: |
             PR: #${{ github.event.pull_request.number }} ${{ github.event.pull_request.html_url }}
