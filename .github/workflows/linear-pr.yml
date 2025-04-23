@@ -12,7 +12,8 @@ jobs:
         uses: actions/github-script@v6
         with:
           script: |
-            const fetch = require('node-fetch');
+            // Import fetch - only once
+            const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
             
             // Extract PR info
             const { title, html_url, body, user } = context.payload.pull_request;
