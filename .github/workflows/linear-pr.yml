@@ -29,19 +29,13 @@ jobs:
           RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
             -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
-            -d "{\"query\":\"mutation CreateIssue(\$title: String!, \$description: String!, \$teamId: String!) { issueCreate(input: { title: \$title, description: \$description, teamId: \$teamId }) { success issue { id identifier url } } }\",\"variables\":{\"title\":\"[PR] ${PR_TITLE}\",\"description\":\"${DESCRIPTION}\",\"teamId\":\"${{ secrets.LINEAR_TEAM_ID }}\"}}")
+            -d "{\"query\":\"mutation CreateIssue(\$title: String!, \$description: String!, \$teamId: String!) { issueCreate(input: { title: \$title, description: \$description, teamId: \$teamId }) { success issue { id identifier url } } }\",\"variables\":{\"title\":\"[PR-${PR_NUMBER}] ${PR_TITLE}\",\"description\":\"${DESCRIPTION}\",\"teamId\":\"${{ secrets.LINEAR_TEAM_ID }}\"}}")
           
           echo "Linear API response: $RESPONSE"
           
           # Extract issue identifier and URL using grep and sed
           ISSUE_IDENTIFIER=$(echo $RESPONSE | grep -o '"identifier":"[^"]*"' | sed 's/"identifier":"//;s/"//')
           ISSUE_URL=$(echo $RESPONSE | grep -o '"url":"[^"]*"' | sed 's/"url":"//;s/"//')
-          ISSUE_ID=$(echo $RESPONSE | grep -o '"id":"[^"]*"' | sed 's/"id":"//;s/"//')
-          
-          echo "Extracted information:"
-          echo "Issue Identifier: $ISSUE_IDENTIFIER"
-          echo "Issue URL: $ISSUE_URL"
-          echo "Issue ID: $ISSUE_ID"
           
           if [ ! -z "$ISSUE_IDENTIFIER" ]; then
             echo "Linear issue created: $ISSUE_IDENTIFIER ($ISSUE_URL)"
@@ -52,15 +46,6 @@ jobs:
               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Content-Type: application/json" \
               -d "{\"body\":\"✅ Linear issue created: [${ISSUE_IDENTIFIER}](${ISSUE_URL})\"}"
-            
-            # Add label with Linear issue ID to PR
-            PR_LABEL_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/labels"
-            curl -s -X POST $PR_LABEL_URL \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/json" \
-              -d "{\"labels\":[\"linear-issue:${ISSUE_ID}\"]}"
-              
-            echo "Added label with Linear issue ID to PR"
           else
             echo "Failed to create Linear issue"
             exit 1
@@ -73,74 +58,9 @@ jobs:
         run: |
           echo "PR has been merged, updating Linear issue status"
           
-          # Get PR labels to find the Linear issue ID
+          # Extract PR info
+          PR_TITLE="${{ github.event.pull_request.title }}"
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          
-          # Extract Linear issue ID directly from event payload labels
-          ISSUE_ID=""
-          
-          # Loop through labels to find linear-issue label
-          echo "Checking labels on PR #${PR_NUMBER}"
-          echo "Labels: ${{ toJSON(github.event.pull_request.labels) }}"
-          
-          for label in $(echo "${{ toJSON(github.event.pull_request.labels) }}" | grep -o '"name":"[^"]*"' | sed 's/"name":"//;s/"//')
-          do
-            echo "Checking label: $label"
-            if [[ $label == linear-issue:* ]]; then
-              ISSUE_ID=${label#linear-issue:}
-              echo "Found Linear issue ID in label: $ISSUE_ID"
-              break
-            fi
-          done
-          
-          # If not found in payload, try API call to get labels
-          if [ -z "$ISSUE_ID" ]; then
-            echo "Linear issue ID not found in payload, fetching from API"
-            LABELS_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/labels"
-            
-            LABELS=$(curl -s -X GET $LABELS_URL \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Content-Type: application/json")
-              
-            echo "Labels response: $LABELS"
-            
-            for label in $(echo "$LABELS" | grep -o '"name":"[^"]*"' | sed 's/"name":"//;s/"//')
-            do
-              if [[ $label == linear-issue:* ]]; then
-                ISSUE_ID=${label#linear-issue:}
-                echo "Found Linear issue ID in API labels: $ISSUE_ID"
-                break
-              fi
-            done
-          fi
-          
-          # If still not found, try to search in past API activity
-          if [ -z "$ISSUE_ID" ]; then
-            echo "Linear issue ID not found in labels, trying to find in PR timeline"
-            TIMELINE_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/timeline"
-            
-            TIMELINE=$(curl -s -X GET $TIMELINE_URL \
-              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-              -H "Accept: application/vnd.github.v3+json" \
-              -H "Content-Type: application/json")
-              
-            echo "Timeline data (first 300 chars): ${TIMELINE:0:300}..."
-            
-            # Extract issue ID from timeline events (looking for comments or label additions)
-            # This is a fallback and might not be reliable
-            ISSUE_ID=$(echo "$TIMELINE" | grep -o 'Linear issue created: \[[^]]*\]([^)]*)' | head -1 | sed 's/.*\///' | sed 's/-.*$//')
-            
-            if [ ! -z "$ISSUE_ID" ]; then
-              echo "Found Linear issue ID in timeline: $ISSUE_ID"
-            fi
-          fi
-          
-          if [ -z "$ISSUE_ID" ]; then
-            echo "Could not find Linear issue ID for this PR"
-            exit 1
-          fi
-          
-          echo "Found Linear issue ID: $ISSUE_ID"
           
           # Get the ID of the "Done" state for your team
           echo "Fetching workflow states for team ${{ secrets.LINEAR_TEAM_ID }}"
@@ -172,6 +92,27 @@ jobs:
           
           echo "Found 'Done' state ID: $DONE_STATE_ID"
           
+          # Find Linear issue by title pattern
+          echo "Finding Linear issue for PR #${PR_NUMBER}"
+          
+          FIND_ISSUE=$(curl -s -X POST https://api.linear.app/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
+            -d "{\"query\":\"query FindIssue(\$title: String!, \$teamId: String!) { issues(filter: { title: { containsIgnoreCase: \$title }, team: { id: { eq: \$teamId } } }) { nodes { id identifier title } } }\",\"variables\":{\"title\":\"[PR-${PR_NUMBER}]\",\"teamId\":\"${{ secrets.LINEAR_TEAM_ID }}\"}}")
+          
+          echo "Find issue response: $FIND_ISSUE"
+          
+          # Extract issue ID
+          ISSUE_ID=$(echo "$FIND_ISSUE" | grep -o '"id":"[^"]*"' | head -1 | sed 's/"id":"//;s/"//')
+          ISSUE_IDENTIFIER=$(echo "$FIND_ISSUE" | grep -o '"identifier":"[^"]*"' | head -1 | sed 's/"identifier":"//;s/"//')
+          
+          if [ -z "$ISSUE_ID" ]; then
+            echo "Could not find Linear issue for PR #${PR_NUMBER}"
+            exit 1
+          fi
+          
+          echo "Found Linear issue: $ISSUE_IDENTIFIER (ID: $ISSUE_ID)"
+          
           # Update the Linear issue status to "Done"
           echo "Updating Linear issue $ISSUE_ID to state $DONE_STATE_ID"
           
@@ -191,7 +132,7 @@ jobs:
             curl -s -X POST $PR_COMMENT_URL \
               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Content-Type: application/json" \
-              -d "{\"body\":\"✅ Linear issue marked as Done\"}"
+              -d "{\"body\":\"✅ Linear issue ${ISSUE_IDENTIFIER} marked as Done\"}"
           else
             echo "Failed to update Linear issue status"
             exit 1
