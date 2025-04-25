@@ -42,25 +42,29 @@ jobs:
           
           echo "Found 'In Progress' state ID: $IN_PROGRESS_STATE_ID"
           
-          # User mapping for assigning issues
-          # This section maps GitHub usernames to Linear user IDs
-          # Add your mappings here in the format: "github_username:linear_user_id"
-          USER_MAPPINGS="jonto2121:jon,user2:lin_user_def456"
+          # User mapping for assigning issues - use full UUID format
+          # This section maps GitHub usernames to Linear user IDs (full UUIDs)
+          # Format: "github_username:linear_user_uuid"
+          # Example: "jonto2121:b7e7e7e7-e7e7-4e7e-8e7e-7e7e7e7e7e7e"
+          # Leave this string empty if you don't want to use user mapping
+          USER_MAPPINGS=""
           
           # Get Linear user ID from mapping
           LINEAR_USER_ID=""
-          while IFS=',' read -ra MAPPINGS; do
-            for mapping in "${MAPPINGS[@]}"; do
-              github_user=$(echo $mapping | cut -d':' -f1)
-              linear_user=$(echo $mapping | cut -d':' -f2)
-              if [ "$github_user" = "$PR_AUTHOR" ]; then
-                LINEAR_USER_ID=$linear_user
-                break
-              fi
-            done
-          done <<< "$USER_MAPPINGS"
+          if [ ! -z "$USER_MAPPINGS" ]; then
+            while IFS=',' read -ra MAPPINGS; do
+              for mapping in "${MAPPINGS[@]}"; do
+                github_user=$(echo $mapping | cut -d':' -f1)
+                linear_user=$(echo $mapping | cut -d':' -f2)
+                if [ "$github_user" = "$PR_AUTHOR" ]; then
+                  LINEAR_USER_ID=$linear_user
+                  break
+                fi
+              done
+            done <<< "$USER_MAPPINGS"
+          fi
           
-          echo "GitHub user: $PR_AUTHOR, Linear user ID: $LINEAR_USER_ID"
+          echo "GitHub user: $PR_AUTHOR, Linear user ID: ${LINEAR_USER_ID:-none}"
           
           # Build assignee parameter if user mapping was found
           ASSIGNEE_PARAM=""
