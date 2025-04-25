@@ -1,14 +1,16 @@
-name: Create Linear Issue from PR
+name: Linear Integration
 
 on:
   pull_request:
-    types: [opened]
+    types: [opened, closed]
 
 jobs:
-  create-linear-issue:
+  linear-integration:
     runs-on: ubuntu-latest
     steps:
+      # Create issue when PR is opened
       - name: Create Linear Issue
+        if: github.event.action == 'opened'
         shell: bash
         run: |
           # Extract PR info
@@ -32,17 +34,87 @@ jobs:
           # Extract issue identifier and URL using grep and sed
           ISSUE_IDENTIFIER=$(echo $RESPONSE | grep -o '"identifier":"[^"]*"' | sed 's/"identifier":"//;s/"//')
           ISSUE_URL=$(echo $RESPONSE | grep -o '"url":"[^"]*"' | sed 's/"url":"//;s/"//')
+          ISSUE_ID=$(echo $RESPONSE | grep -o '"id":"[^"]*"' | sed 's/"id":"//;s/"//')
           
           if [ ! -z "$ISSUE_IDENTIFIER" ]; then
             echo "Linear issue created: $ISSUE_IDENTIFIER ($ISSUE_URL)"
+            
+            # Add comment to PR with issue info and store the issue ID for later use
+            PR_COMMENT_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
+            curl -s -X POST $PR_COMMENT_URL \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"body\":\"✅ Linear issue created: [${ISSUE_IDENTIFIER}](${ISSUE_URL})\n\n<!-- linear-issue-id: ${ISSUE_ID} -->\"}"
+          else
+            echo "Failed to create Linear issue"
+            exit 1
+          fi
+
+      # Update issue status when PR is merged
+      - name: Update Linear Issue Status
+        if: github.event.action == 'closed' && github.event.pull_request.merged == true
+        shell: bash
+        run: |
+          # Get PR comments to find the Linear issue ID
+          PR_NUMBER="${{ github.event.pull_request.number }}"
+          COMMENTS_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
+          
+          COMMENTS=$(curl -s -X GET $COMMENTS_URL \
+            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            -H "Content-Type: application/json")
+          
+          # Extract Linear issue ID from comments
+          ISSUE_ID=$(echo $COMMENTS | grep -o '"linear-issue-id: [^"]*"' | head -1 | sed 's/"linear-issue-id: //;s/"//')
+          
+          if [ -z "$ISSUE_ID" ]; then
+            echo "Could not find Linear issue ID in PR comments"
+            exit 1
+          fi
+          
+          echo "Found Linear issue ID: $ISSUE_ID"
+          
+          # Get the ID of the "Done" state for your team
+          STATES_QUERY=$(curl -s -X POST https://api.linear.app/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
+            -d "{\"query\":\"{ workflowStates(filter: { team: { id: { eq: \\\"${{ secrets.LINEAR_TEAM_ID }}\\\" } } }) { nodes { id name type } } }\"}")
+          
+          echo "Workflow states: $STATES_QUERY"
+          
+          # Extract the "Done" state ID
+          DONE_STATE_ID=$(echo $STATES_QUERY | grep -o '"id":"[^"]*","name":"Done"' | head -1 | sed 's/"id":"//;s/","name":"Done"//')
+          
+          if [ -z "$DONE_STATE_ID" ]; then
+            # Try to find any completed state if "Done" isn't found
+            DONE_STATE_ID=$(echo $STATES_QUERY | grep -o '"id":"[^"]*","name":"[^"]*","type":"completed"' | head -1 | sed 's/.*"id":"//;s/","name.*//')
+          fi
+          
+          if [ -z "$DONE_STATE_ID" ]; then
+            echo "Could not find 'Done' state ID for your team"
+            exit 1
+          fi
+          
+          echo "Found 'Done' state ID: $DONE_STATE_ID"
+          
+          # Update the Linear issue status to "Done"
+          UPDATE_RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
+            -d "{\"query\":\"mutation UpdateIssue(\$issueId: String!, \$stateId: String!) { issueUpdate(id: \$issueId, input: { stateId: \$stateId }) { success issue { id identifier state { name } } } }\",\"variables\":{\"issueId\":\"${ISSUE_ID}\",\"stateId\":\"${DONE_STATE_ID}\"}}")
+          
+          echo "Update response: $UPDATE_RESPONSE"
+          
+          SUCCESS=$(echo $UPDATE_RESPONSE | grep -o '"success":true')
+          if [ ! -z "$SUCCESS" ]; then
+            echo "Successfully updated Linear issue status to Done"
             
             # Add comment to PR
             PR_COMMENT_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
             curl -s -X POST $PR_COMMENT_URL \
               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Content-Type: application/json" \
-              -d "{\"body\":\"✅ Linear issue created: [${ISSUE_IDENTIFIER}](${ISSUE_URL})\"}"
+              -d "{\"body\":\"✅ Linear issue marked as Done\"}"
           else
-            echo "Failed to create Linear issue"
+            echo "Failed to update Linear issue status"
             exit 1
           fi
