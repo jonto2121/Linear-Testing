@@ -47,7 +47,7 @@ jobs:
           # Format: "github_username:linear_user_uuid"
           # Example: "jonto2121:b7e7e7e7-e7e7-4e7e-8e7e-7e7e7e7e7e7e"
           # Leave this string empty if you don't want to use user mapping
-          USER_MAPPINGS=""
+          USER_MAPPINGS="jonto2121:6c7802ea-a1f9-43a8-8a7b-1976a9291847"
           
           # Get Linear user ID from mapping
           LINEAR_USER_ID=""
