@@ -20,6 +20,8 @@ jobs:
           PR_AUTHOR="${{ github.event.pull_request.user.login }}"
           PR_BODY="${{ github.event.pull_request.body }}"
           
+          echo "Creating Linear issue for PR #${PR_NUMBER}: ${PR_TITLE}"
+          
           # Format description (escape for JSON)
           DESCRIPTION="## GitHub PR Details\n**PR:** [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})\n**Author:** ${PR_AUTHOR}\n\n${PR_BODY}"
           
@@ -36,15 +38,26 @@ jobs:
           ISSUE_URL=$(echo $RESPONSE | grep -o '"url":"[^"]*"' | sed 's/"url":"//;s/"//')
           ISSUE_ID=$(echo $RESPONSE | grep -o '"id":"[^"]*"' | sed 's/"id":"//;s/"//')
           
+          echo "Extracted information:"
+          echo "Issue Identifier: $ISSUE_IDENTIFIER"
+          echo "Issue URL: $ISSUE_URL"
+          echo "Issue ID: $ISSUE_ID"
+          
           if [ ! -z "$ISSUE_IDENTIFIER" ]; then
             echo "Linear issue created: $ISSUE_IDENTIFIER ($ISSUE_URL)"
             
             # Add comment to PR with issue info and store the issue ID for later use
             PR_COMMENT_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
-            curl -s -X POST $PR_COMMENT_URL \
+            COMMENT_PAYLOAD="{\"body\":\"✅ Linear issue created: [${ISSUE_IDENTIFIER}](${ISSUE_URL})\n\n<!-- linear-issue-id: ${ISSUE_ID} -->\"}"
+            
+            echo "Adding comment to PR with payload: $COMMENT_PAYLOAD"
+            
+            COMMENT_RESPONSE=$(curl -s -X POST $PR_COMMENT_URL \
               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Content-Type: application/json" \
-              -d "{\"body\":\"✅ Linear issue created: [${ISSUE_IDENTIFIER}](${ISSUE_URL})\n\n<!-- linear-issue-id: ${ISSUE_ID} -->\"}"
+              -d "$COMMENT_PAYLOAD")
+              
+            echo "Comment response: $COMMENT_RESPONSE"
           else
             echo "Failed to create Linear issue"
             exit 1
@@ -55,16 +68,28 @@ jobs:
         if: github.event.action == 'closed' && github.event.pull_request.merged == true
         shell: bash
         run: |
+          echo "PR has been merged, updating Linear issue status"
+          
           # Get PR comments to find the Linear issue ID
           PR_NUMBER="${{ github.event.pull_request.number }}"
           COMMENTS_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
+          
+          echo "Fetching comments from: $COMMENTS_URL"
           
           COMMENTS=$(curl -s -X GET $COMMENTS_URL \
             -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
             -H "Content-Type: application/json")
           
-          # Extract Linear issue ID from comments
-          ISSUE_ID=$(echo $COMMENTS | grep -o '"linear-issue-id: [^"]*"' | head -1 | sed 's/"linear-issue-id: //;s/"//')
+          echo "Comments data (first 300 chars): ${COMMENTS:0:300}..."
+          
+          # Extract Linear issue ID from comments - first try with HTML comment format
+          ISSUE_ID=$(echo "$COMMENTS" | grep -o 'linear-issue-id: [^"]*' | head -1 | sed 's/linear-issue-id: //')
+          
+          if [ -z "$ISSUE_ID" ]; then
+            echo "Could not find Linear issue ID in HTML comments, trying alternate pattern"
+            # Try alternate pattern
+            ISSUE_ID=$(echo "$COMMENTS" | grep -o 'Linear issue created: \[[^]]*\]([^)]*)' | head -1 | sed 's/.*(//' | sed 's/).*//' | sed 's/.*\///' | sed 's/-.*$//')
+          fi
           
           if [ -z "$ISSUE_ID" ]; then
             echo "Could not find Linear issue ID in PR comments"
@@ -74,29 +99,38 @@ jobs:
           echo "Found Linear issue ID: $ISSUE_ID"
           
           # Get the ID of the "Done" state for your team
+          echo "Fetching workflow states for team ${{ secrets.LINEAR_TEAM_ID }}"
+          
           STATES_QUERY=$(curl -s -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
             -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
             -d "{\"query\":\"{ workflowStates(filter: { team: { id: { eq: \\\"${{ secrets.LINEAR_TEAM_ID }}\\\" } } }) { nodes { id name type } } }\"}")
           
-          echo "Workflow states: $STATES_QUERY"
+          echo "Workflow states response: $STATES_QUERY"
           
           # Extract the "Done" state ID
-          DONE_STATE_ID=$(echo $STATES_QUERY | grep -o '"id":"[^"]*","name":"Done"' | head -1 | sed 's/"id":"//;s/","name":"Done"//')
+          DONE_STATE_ID=$(echo "$STATES_QUERY" | grep -o '"id":"[^"]*","name":"Done"' | head -1 | sed 's/"id":"//;s/","name":"Done"//')
+          
+          echo "First attempt to find Done state ID: '$DONE_STATE_ID'"
           
           if [ -z "$DONE_STATE_ID" ]; then
+            echo "Trying to find any completed state"
             # Try to find any completed state if "Done" isn't found
-            DONE_STATE_ID=$(echo $STATES_QUERY | grep -o '"id":"[^"]*","name":"[^"]*","type":"completed"' | head -1 | sed 's/.*"id":"//;s/","name.*//')
+            DONE_STATE_ID=$(echo "$STATES_QUERY" | grep -o '"id":"[^"]*","name":"[^"]*","type":"completed"' | head -1 | sed 's/.*"id":"//;s/","name.*//')
+            echo "Found completed state ID: '$DONE_STATE_ID'"
           fi
           
           if [ -z "$DONE_STATE_ID" ]; then
             echo "Could not find 'Done' state ID for your team"
+            echo "Full workflow states data: $STATES_QUERY"
             exit 1
           fi
           
           echo "Found 'Done' state ID: $DONE_STATE_ID"
           
           # Update the Linear issue status to "Done"
+          echo "Updating Linear issue $ISSUE_ID to state $DONE_STATE_ID"
+          
           UPDATE_RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
             -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
@@ -104,7 +138,7 @@ jobs:
           
           echo "Update response: $UPDATE_RESPONSE"
           
-          SUCCESS=$(echo $UPDATE_RESPONSE | grep -o '"success":true')
+          SUCCESS=$(echo "$UPDATE_RESPONSE" | grep -o '"success":true')
           if [ ! -z "$SUCCESS" ]; then
             echo "Successfully updated Linear issue status to Done"
             
