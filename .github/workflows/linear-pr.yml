@@ -46,18 +46,21 @@ jobs:
           if [ ! -z "$ISSUE_IDENTIFIER" ]; then
             echo "Linear issue created: $ISSUE_IDENTIFIER ($ISSUE_URL)"
             
-            # Add comment to PR with issue info and store the issue ID for later use
+            # Add comment to PR with issue info
             PR_COMMENT_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
-            COMMENT_PAYLOAD="{\"body\":\"✅ Linear issue created: [${ISSUE_IDENTIFIER}](${ISSUE_URL})\n\n<!-- linear-issue-id: ${ISSUE_ID} -->\"}"
-            
-            echo "Adding comment to PR with payload: $COMMENT_PAYLOAD"
-            
-            COMMENT_RESPONSE=$(curl -s -X POST $PR_COMMENT_URL \
+            curl -s -X POST $PR_COMMENT_URL \
               -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
               -H "Content-Type: application/json" \
-              -d "$COMMENT_PAYLOAD")
+              -d "{\"body\":\"✅ Linear issue created: [${ISSUE_IDENTIFIER}](${ISSUE_URL})\"}"
+            
+            # Add label with Linear issue ID to PR
+            PR_LABEL_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/labels"
+            curl -s -X POST $PR_LABEL_URL \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json" \
+              -d "{\"labels\":[\"linear-issue:${ISSUE_ID}\"]}"
               
-            echo "Comment response: $COMMENT_RESPONSE"
+            echo "Added label with Linear issue ID to PR"
           else
             echo "Failed to create Linear issue"
             exit 1
@@ -70,29 +73,70 @@ jobs:
         run: |
           echo "PR has been merged, updating Linear issue status"
           
-          # Get PR comments to find the Linear issue ID
+          # Get PR labels to find the Linear issue ID
           PR_NUMBER="${{ github.event.pull_request.number }}"
-          COMMENTS_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/comments"
           
-          echo "Fetching comments from: $COMMENTS_URL"
+          # Extract Linear issue ID directly from event payload labels
+          ISSUE_ID=""
           
-          COMMENTS=$(curl -s -X GET $COMMENTS_URL \
-            -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-            -H "Content-Type: application/json")
+          # Loop through labels to find linear-issue label
+          echo "Checking labels on PR #${PR_NUMBER}"
+          echo "Labels: ${{ toJSON(github.event.pull_request.labels) }}"
           
-          echo "Comments data (first 300 chars): ${COMMENTS:0:300}..."
+          for label in $(echo "${{ toJSON(github.event.pull_request.labels) }}" | grep -o '"name":"[^"]*"' | sed 's/"name":"//;s/"//')
+          do
+            echo "Checking label: $label"
+            if [[ $label == linear-issue:* ]]; then
+              ISSUE_ID=${label#linear-issue:}
+              echo "Found Linear issue ID in label: $ISSUE_ID"
+              break
+            fi
+          done
           
-          # Extract Linear issue ID from comments - first try with HTML comment format
-          ISSUE_ID=$(echo "$COMMENTS" | grep -o 'linear-issue-id: [^"]*' | head -1 | sed 's/linear-issue-id: //')
-          
+          # If not found in payload, try API call to get labels
           if [ -z "$ISSUE_ID" ]; then
-            echo "Could not find Linear issue ID in HTML comments, trying alternate pattern"
-            # Try alternate pattern
-            ISSUE_ID=$(echo "$COMMENTS" | grep -o 'Linear issue created: \[[^]]*\]([^)]*)' | head -1 | sed 's/.*(//' | sed 's/).*//' | sed 's/.*\///' | sed 's/-.*$//')
+            echo "Linear issue ID not found in payload, fetching from API"
+            LABELS_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/labels"
+            
+            LABELS=$(curl -s -X GET $LABELS_URL \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Content-Type: application/json")
+              
+            echo "Labels response: $LABELS"
+            
+            for label in $(echo "$LABELS" | grep -o '"name":"[^"]*"' | sed 's/"name":"//;s/"//')
+            do
+              if [[ $label == linear-issue:* ]]; then
+                ISSUE_ID=${label#linear-issue:}
+                echo "Found Linear issue ID in API labels: $ISSUE_ID"
+                break
+              fi
+            done
+          fi
+          
+          # If still not found, try to search in past API activity
+          if [ -z "$ISSUE_ID" ]; then
+            echo "Linear issue ID not found in labels, trying to find in PR timeline"
+            TIMELINE_URL="${{ github.api_url }}/repos/${{ github.repository }}/issues/${PR_NUMBER}/timeline"
+            
+            TIMELINE=$(curl -s -X GET $TIMELINE_URL \
+              -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+              -H "Accept: application/vnd.github.v3+json" \
+              -H "Content-Type: application/json")
+              
+            echo "Timeline data (first 300 chars): ${TIMELINE:0:300}..."
+            
+            # Extract issue ID from timeline events (looking for comments or label additions)
+            # This is a fallback and might not be reliable
+            ISSUE_ID=$(echo "$TIMELINE" | grep -o 'Linear issue created: \[[^]]*\]([^)]*)' | head -1 | sed 's/.*\///' | sed 's/-.*$//')
+            
+            if [ ! -z "$ISSUE_ID" ]; then
+              echo "Found Linear issue ID in timeline: $ISSUE_ID"
+            fi
           fi
           
           if [ -z "$ISSUE_ID" ]; then
-            echo "Could not find Linear issue ID in PR comments"
+            echo "Could not find Linear issue ID for this PR"
             exit 1
           fi
           
