@@ -25,11 +25,67 @@ jobs:
           # Format description (escape for JSON)
           DESCRIPTION="## GitHub PR Details\n**PR:** [#${PR_NUMBER}: ${PR_TITLE}](${PR_URL})\n**Author:** ${PR_AUTHOR}\n\n${PR_BODY}"
           
-          # Create Linear issue via API using curl with correct teamId field
+          # Get "In Progress" state ID for the team
+          echo "Fetching workflow states for team ${{ secrets.LINEAR_TEAM_ID }}"
+          STATES_QUERY=$(curl -s -X POST https://api.linear.app/graphql \
+            -H "Content-Type: application/json" \
+            -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
+            -d "{\"query\":\"{ workflowStates(filter: { team: { id: { eq: \\\"${{ secrets.LINEAR_TEAM_ID }}\\\" } } }) { nodes { id name type } } }\"}")
+          
+          # Extract the "In Progress" state ID
+          IN_PROGRESS_STATE_ID=$(echo "$STATES_QUERY" | grep -o '"id":"[^"]*","name":"In Progress"' | head -1 | sed 's/"id":"//;s/","name":"In Progress"//')
+          
+          if [ -z "$IN_PROGRESS_STATE_ID" ]; then
+            # Try to find any started state if "In Progress" isn't found
+            IN_PROGRESS_STATE_ID=$(echo "$STATES_QUERY" | grep -o '"id":"[^"]*","name":"[^"]*","type":"started"' | head -1 | sed 's/.*"id":"//;s/","name.*//')
+          fi
+          
+          echo "Found 'In Progress' state ID: $IN_PROGRESS_STATE_ID"
+          
+          # User mapping for assigning issues
+          # This section maps GitHub usernames to Linear user IDs
+          # Add your mappings here in the format: "github_username:linear_user_id"
+          USER_MAPPINGS="jonto2121:jon,user2:lin_user_def456"
+          
+          # Get Linear user ID from mapping
+          LINEAR_USER_ID=""
+          while IFS=',' read -ra MAPPINGS; do
+            for mapping in "${MAPPINGS[@]}"; do
+              github_user=$(echo $mapping | cut -d':' -f1)
+              linear_user=$(echo $mapping | cut -d':' -f2)
+              if [ "$github_user" = "$PR_AUTHOR" ]; then
+                LINEAR_USER_ID=$linear_user
+                break
+              fi
+            done
+          done <<< "$USER_MAPPINGS"
+          
+          echo "GitHub user: $PR_AUTHOR, Linear user ID: $LINEAR_USER_ID"
+          
+          # Build assignee parameter if user mapping was found
+          ASSIGNEE_PARAM=""
+          if [ ! -z "$LINEAR_USER_ID" ]; then
+            ASSIGNEE_PARAM=", assigneeId: \\\"$LINEAR_USER_ID\\\""
+          fi
+          
+          # Build state parameter if In Progress state was found
+          STATE_PARAM=""
+          if [ ! -z "$IN_PROGRESS_STATE_ID" ]; then
+            STATE_PARAM=", stateId: \\\"$IN_PROGRESS_STATE_ID\\\""
+          fi
+          
+          # Title format: PR Title [PR-Number]
+          ISSUE_TITLE="${PR_TITLE} [PR-${PR_NUMBER}]"
+          
+          # Create Linear issue via API including state and assignee if available
+          QUERY="{\"query\":\"mutation CreateIssue(\$title: String!, \$description: String!, \$teamId: String!) { issueCreate(input: { title: \$title, description: \$description, teamId: \$teamId$STATE_PARAM$ASSIGNEE_PARAM }) { success issue { id identifier url } } }\",\"variables\":{\"title\":\"${ISSUE_TITLE}\",\"description\":\"${DESCRIPTION}\",\"teamId\":\"${{ secrets.LINEAR_TEAM_ID }}\"}}"
+          
+          echo "Query: $QUERY"
+          
           RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
             -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
-            -d "{\"query\":\"mutation CreateIssue(\$title: String!, \$description: String!, \$teamId: String!) { issueCreate(input: { title: \$title, description: \$description, teamId: \$teamId }) { success issue { id identifier url } } }\",\"variables\":{\"title\":\"[PR-${PR_NUMBER}] ${PR_TITLE}\",\"description\":\"${DESCRIPTION}\",\"teamId\":\"${{ secrets.LINEAR_TEAM_ID }}\"}}")
+            -d "$QUERY")
           
           echo "Linear API response: $RESPONSE"
           
@@ -92,7 +148,7 @@ jobs:
           
           echo "Found 'Done' state ID: $DONE_STATE_ID"
           
-          # Find Linear issue by title pattern - using a simpler query approach
+          # Find Linear issue by PR number marker in title
           echo "Finding Linear issue for PR #${PR_NUMBER}"
           
           SEARCH_TERM="[PR-${PR_NUMBER}]"
