@@ -92,13 +92,16 @@ jobs:
           
           echo "Found 'Done' state ID: $DONE_STATE_ID"
           
-          # Find Linear issue by title pattern
+          # Find Linear issue by title pattern - using a simpler query approach
           echo "Finding Linear issue for PR #${PR_NUMBER}"
+          
+          SEARCH_TERM="[PR-${PR_NUMBER}]"
+          echo "Searching for issues with title containing: $SEARCH_TERM"
           
           FIND_ISSUE=$(curl -s -X POST https://api.linear.app/graphql \
             -H "Content-Type: application/json" \
             -H "Authorization: ${{ secrets.LINEAR_API_KEY }}" \
-            -d "{\"query\":\"query FindIssue(\$title: String!, \$teamId: String!) { issues(filter: { title: { containsIgnoreCase: \$title }, team: { id: { eq: \$teamId } } }) { nodes { id identifier title } } }\",\"variables\":{\"title\":\"[PR-${PR_NUMBER}]\",\"teamId\":\"${{ secrets.LINEAR_TEAM_ID }}\"}}")
+            -d "{\"query\":\"query { issues(filter: { title: { containsIgnoreCase: \\\"${SEARCH_TERM}\\\" } }) { nodes { id identifier title } } }\"}")
           
           echo "Find issue response: $FIND_ISSUE"
           
